@@ -1,0 +1,2360 @@
+---
+title: "Final_Project"
+author: "Angelica Iacovelli"
+output: html_document
+---
+
+# **INTRODUCTION**
+
+**HOW TO USE THIS LIVE SCRIPT**
+
+In this executable notebook (Live Editor) you have a logical track of the work with working code snippets. In this code we decided to embed one of the possible methods to execute the selected task: Business Case 2.
+
+We have however, tried multiple methodologies and techniques, which are written in the codes *FINAL_PROJECT_All.Rmd* and *FINAL_PROJECT_All.mat.*
+
+**GOAL: RECOMMENDATION SYSTEM / NEXT BEST ACTION**
+
+Here we have a random extraction of a dataset made up of a wealth manager's customers. The data is anonymous, mostly clean and NOT always normalized/scaled.
+
+We intend to estimate some **investments needs** for these customers using Data Science techniques.
+
+Specifically, our key task is building a **Recommender System, i.e. finding the "Next Best Action".**
+
+The dataset is called "Needs", and it contains some features and two responses:
+
+1.  AccumulationInvest, which is about **Accumulation investing,** typically using dollar-cost averaging (you invest small amounts of your money at certain intervals over the course of time); the response is boolean: 1 = high propensity \| 0 = low propensity;
+
+2.  IncomeInvest, which is about **Income investing,** typically through lump sum investing (one shot); the response is boolean: 1 = high propensity \| 0 = low propensity.
+
+Then we have a second table, **Products**, with some products (funds, segregated accounts, unit-linked), their **type** (1= Accumulation, 0 = Income), and their **risk level** (normalized in the range [0,1], usually; this is the synthetic risk and reward indicator or SRRI, for the product).
+
+The recommendation system is based on two key steps:
+
+1.  We want to learn to recognize customers with above-average propensity to invest (AccumulationInvest = 1, and/or IncomeInvest = 1);
+
+2.  For each customer we will associate a product with each need, finding the best match, based on the product type/need and its risk level, and that will be the personalized product recommendation, ie, the Next Best Action for that specific client.
+
+**THE WORKFLOW**
+
+-   ***DATA EXPLORATION*****:** Here we explore and visualize data to uncover insights from the start or identify areas or patterns to dig into more. Spoiler: here we define our **ideal target audience:** customers inclined to both types of investment, whom we will call **1-1 customers**. Therefore, at this stage we study the characteristics incorporated by these customers and compare them with others.
+
+-   ***PCA*****:** At this stage, after dividing the data into different categories, according to responses:
+
+    \- customers 1-0 (Income investment only)
+
+    \- customers 0-1 (Only accumulation investment)
+
+    \- customers 0-0 (No investment)
+
+    we perform a principal component analysis (PCA) for each of these subgroups: this technique will come in handy for the next clustering step.
+
+-   ***CLUSTERING*****:** At this point we perform clustering on the principal components of each of these 3 datasets: this will allow us to obtain certain clusters that we will find to be very similar to our ideal cluster (1-1). We call these clusters: "**transition clusters**," since if customers fall here, it means that they can be identified as ideal customers (1-1).
+
+    These clusters will be useful in later stages when we try to predict new labels on a test dataset: the moment the predicted data fall into the transition clusters, they will be classified as 1-1 data. This will allow our ideal target to expand, while also correcting possible errors in the classifiers.
+
+-   ***CLASSIFIERS*****:** Here we define classifiers, one for income investment (Logistic Regression) and one for accumulation investment (Ensemble Tree (Bagged)).
+
+-   ***TEST*****:** At this stage we can apply the previously created classifiers on the test dataset. At this point we have two types of responses:
+
+    1)  Ideal target: 1-1
+
+    2)  Others: 1-0, 0-1, 0-0
+
+    If we find ourselves in case 2), we use a QDA classifier (Quadratic Discriminant Analysis) to figure out whether the clients are in transition clusters. If yes, they will be sent to the ideal 1-1 cluster.
+
+-   ***RECCOMENDATION SYSTEM*****:** In this last step, we define an algorithm to recommend products to customers.
+
+    We decided to implement a long-term strategy, so that clients who are not very inclined or indicated to invest may in the future have the right tools or drive to do so.
+
+    Concretely, we implemented this strategy by offering **finance courses** to clients with a below-average financial education threshold, and by offering counseling with a **financial advisor** in the case of clients with above-average financial education.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(rgl.useNULL = TRUE) # Suppress the separate window.
+```
+
+```{r include=FALSE}
+
+rm(list = ls())
+
+setwd('C:/Users/39346/Desktop/University/APPLIED STATISTICS/Lab/Lab 5') 
+load('mcshapiro.test.RData')
+load('FDAfunctions.RData')
+```
+
+```{r include=FALSE}
+
+#### LIBRARIES
+library(ggplot2)
+library(car)                  
+library(MASS)                
+library(class)               
+library(glmnet)              
+library(leaps)               
+library(tree)                
+library(mvtnorm)
+library(mvnormtest)
+library(rgl)
+library(ISLR)              
+library(leaps)          
+library(nlmeU)             
+library(nlme)                
+library(corrplot)
+library(lattice)
+library(plot.matrix)
+library(lme4)
+library(insight)
+library(ordinal) 
+library(sp)                   
+library(gstat)
+library(plot3D)
+library(psych)
+library(GGally)
+```
+
+# **DATA EXPLORATION**
+
+Let's take a look at the data:
+
+```{r}
+library(readxl)
+dataor <- read_excel("C:/Users/39346/Desktop/University/FINTECH/Final Project/Needs.xls")
+head(dataor)
+
+```
+
+**ATTRIBUTES**:
+
+1.  **ID**: Numerical ID
+
+2.  **Age**: Age, in years
+
+3.  **Gender**: Gender (Female = 1, Male = 0)
+
+4.  **FamilyMembers**: Number of components
+
+5.  **FinancialEducation**: Normalized level of Financial Education (estimate)
+
+6.  **RiskPropensity**: Normalized Risk propensity from MIFID profile
+
+7.  **Income**: Income (thousands of euros); estimate
+
+8.  **Wealth**: Wealth (thousands of euros); sum of investments and cash accounts
+
+9.  **IncomeInvestment**: Boolean variable for Income investment; 1 = High propensity
+
+10. **AccumulationInvestment**: Boolean variable for Accumulation/growth investment; 1 = High propensity
+
+**UNIVARIATE DISTRIBUTIONS**:
+
+We start looking at univariate distributions. For example, we check for imbalanced classes.
+
+```{r}
+hist(dataor$Age,
+main="Age",
+xlab="Age (years)",
+xlim=c(10,100),
+ylab = "Frequency",
+col="darkmagenta",
+freq=FALSE
+)
+```
+
+hist(dataor\$Gender, main="Gender", xlab="Gender (1=Female, 0=Male)", breaks=2, ylab = "Frequency", col="yellow" )
+
+```{r}
+plot(as.factor(dataor$Gender), 
+     main="Gender",
+     xlab = "Gender (1=Female, 0=Male)",
+     ylab="Frequency", 
+     col=c(2,3))
+```
+
+```{r}
+plot(as.factor(dataor$FamilyMembers),
+main="Family dimension",
+xlab="Number of members (number of people)",
+xlim=c(0,6),
+ylab = "Frequency",
+col="red"
+)
+```
+
+```{r}
+hist(dataor$FinancialEducation,
+main="Financial Education",
+xlab="Level of financial education (normalized)",
+xlim=c(0,1),
+ylab = "Frequency",
+col="green",
+freq=FALSE
+)
+```
+
+```{r}
+hist(dataor$RiskPropensity,
+main="Financial Risk Propensity",
+xlab="Level of risk propensity (normalized)",
+xlim=c(0,1),
+ylab = "Frequency",
+col="lightblue",
+freq=FALSE
+)
+```
+
+```{r}
+hist(dataor$Income,
+main="Personal Income",
+xlab="Estimated personal income (thousands of euros)",
+xlim=c(0,400),
+ylab = "Frequency",
+col="orange",
+breaks = 100,
+freq=FALSE
+)
+```
+
+```{r}
+hist(dataor$Wealth,
+main="Personal Wealth (thousands of euros)",
+xlab="Estimated wealth",
+xlim=c(0,2500),
+ylab = "Frequency",
+col="pink",
+breaks=100,
+freq=TRUE
+)
+```
+
+```{r}
+plot(as.factor(dataor$IncomeInvestment),
+main="Need of Income investment - Imbalanced class?",
+xlab="Income investment need (categorical Y=1, N=0)",
+ylab = "Frequency",
+col=c(3,4),
+)
+```
+
+Regarding the variable Income Investment, as we can see, we have imbalanced classes: this could cause difficulties in creating a good classifier.
+
+```{r}
+plot(as.factor(dataor$AccumulationInvestment),
+main="Need of Accumulation investment - Imbalanced class?",
+xlab="Accumulation investment need (categorical Y=1, N=0)",
+ylab = "Frequency",
+col=c(5,7),
+)
+```
+
+Fortunately, the classes of variable Accumulation Investment turn out to be more balanced!
+
+**MULTIVARIATE PERSPECTIVE**:
+
+Correlation plots help us to visualize the correlation between variables.
+
+```{r}
+data <- scale(dataor) 
+corPlot(data[,2:8], cex = 0.9)
+```
+
+```{r}
+M = cor(data[,2:8])
+corrplot(M, order = 'AOE')
+```
+
+The variables among which we see a stronger **correlation** are:
+
+-   **Financial Education** and **Risk Propensity** (0.68): in this case the correlation is positive: as Financial education increases, there will be a stronger tendency to invest (Risk Propensity). So we will exploit this correlation in the next steps, making sure that people with low risk propensity can be offered financial education through a course.
+
+-   **Income** and **Wealth** (0.60): The value of all the assets of worth owned by a person (wealth) seems to be positive correlated with his income.
+
+**SPLITTING DATASET IN 4 PARTS**:
+
+We split clients taking in account Income and Accumulation propensity to investments (responses):
+
+First of all we select the rows corresponding to each subgroup,
+
+```{r}
+labels_11 <- which((dataor$IncomeInvestment ==1) & (dataor$AccumulationInvestment == 1)) 
+labels_10 <- which((dataor$IncomeInvestment ==1) & (dataor$AccumulationInvestment == 0)) 
+labels_01 <- which((dataor$IncomeInvestment ==0) & (dataor$AccumulationInvestment == 1)) 
+labels_00 <- which((dataor$IncomeInvestment ==0) & (dataor$AccumulationInvestment == 0))
+```
+
+then, we create the correspondent 4 reduced dataset, which will be analyzed and compared with each other.
+
+```{r}
+data_11 <- dataor[labels_11,]
+data_10 <- dataor[labels_10,]
+data_01 <- dataor[labels_01,]
+data_00 <- dataor[labels_00,]
+```
+
+Let's visualize them:
+
+Customers 1-1 (Both investments):
+
+```{r}
+head(data_11) 
+```
+
+Customers 1-0 (Income investment only):
+
+```{r}
+head(data_10) 
+```
+
+Customers 0-1 (Only accumulation investment):
+
+```{r}
+head(data_01)
+```
+
+Customers 0-0 (No investment):
+
+```{r}
+head(data_00)
+```
+
+The first goal is to show how our customers are divided, so what are the characteristics that differentiate each cluster. For achieving it we use a graphical method, numerical one and later a logistic regression.
+
+#### **GRAPHICAL COMPARISON:**
+
+From the graphs we notice that the difference between the subdivisions is given above all from the variable income and wealth.
+
+Here we plot each group with different colors, representing income as a function of wealth:
+
+```{r}
+plot(data_11$Wealth, data_11$Income,col=2, xlab = "Wealth", ylab ="Income" )
+points(data_10$Wealth, data_10$Income,col=3)
+points(data_01$Wealth, data_01$Income,col=4)
+points(data_00$Wealth, data_00$Income,col=1)
+title(main="Different clusters")
+legend(x = "topright",          # Position
+       legend = c("1-1", "1-0", "0-1", "0-0"),  # Legend texts
+       col = c(2, 3,4,1),           # Line colors
+       lwd = 3) 
+```
+
+We now evaluate pairs of subgroups:
+
+Plot of 1-1 vs 0-0:
+
+```{r}
+plot(data_11$Wealth, data_11$Income,main="1-1 vs 0-0",col=2, xlab = "Wealth", ylab ="Income")
+points(data_00$Wealth, data_00$Income,col=1)
+legend(x = "topright",          # Position
+       legend = c("1-1", "0-0"),  # Legend texts
+       col = c(2, 1),           # Line colors
+       lwd = 3)
+```
+
+Moreover variable Income takes importance in not proposing an accumulation investment, instead the variable Wealth in not proposing income investment (plots below).
+
+Plot of 1-1 vs 0-1:
+
+```{r}
+# Plot 1-1 vs 0-1 Income and  Fin Education (0-1 lower Income)
+plot(data_11$Income, data_11$FinancialEducation,col=2,main="1-1 vs 1-0",xlab = "Income", ylab ="Fin Education")
+points(data_10$Income, data_10$FinancialEducation,col=3)
+legend(x = "topright",          # Position
+       legend = c("1-1", "1-0"),  # Legend texts
+       col = c(2, 3),           # Line colors
+       lwd = 3)
+```
+
+Plot of 1-1 vs 0-1
+
+```{r}
+# Plot 1-1 vs 0-1 Wealth and  FIn Education (0-1 lower Wealth)
+plot(data_11$Wealth, data_11$FinancialEducation,col=2, main="1-1 vs 0-1", xlab = "Wealth", ylab ="Fin Education")
+points(data_01$Wealth, data_01$FinancialEducation,col=4)
+legend(x = "topright",          # Position
+       legend = c("1-1", "0-1"),  # Legend texts
+       col = c(2, 4),           # Line colors
+       lwd = 3)
+```
+
+From the graphs we notice that the difference between the subdivisions is given above all from the variable Income and Wealth. However, it is possible to notice some customers who do not respect this logic. One of our purposes is to recognize this kind of customers and then send them to its real group of belonging (second part of our study).
+
+**ROLE OF RISK PROPENSITY**:
+
+Risk propensity variable is **not a significant variable** in the subdivision of different investment groups. The following graphs and the subsequent logistic regression show that its presence between the features used for the classifiers would be superfluous.
+
+```{r}
+# Show the uselessness of variable Risk propensity
+plot(data_11$RiskPropensity, data_11$FinancialEducation,col=2,main="Risk vs Fin Education (1-1 vs 0-0)", xlab = "Risk", ylab ="Fin Education")
+points(data_00$RiskPropensity, data_00$FinancialEducation,col=1)
+legend(x = "topright",          # Position
+       legend = c("1-1", "0-0"),  # Legend texts
+       col = c(2, 1),           # Line colors
+       lwd = 3)
+```
+
+```{r}
+plot(data_11$RiskPropensity, data_11$FinancialEducation,col=2, main="Risk vs Fin Education (1-1 vs 1-0)", xlab = "Risk", ylab ="Fin Education")
+points(data_10$RiskPropensity, data_10$FinancialEducation,col=3)
+legend(x = "topright",          # Position
+       legend = c("1-1", "1-0"),  # Legend texts
+       col = c(2, 3),           # Line colors
+       lwd = 3)
+```
+
+```{r}
+plot(data_11$RiskPropensity, data_11$FinancialEducation,col=2,main="Risk vs Fin Education (1-1 vs 0-1)", xlab = "Risk", ylab ="Fin Education")
+points(data_01$RiskPropensity, data_01$FinancialEducation,col=4)
+legend(x = "topright",          # Position
+       legend = c("1-1", "0-1"),  # Legend texts
+       col = c(2, 4),           # Line colors
+       lwd = 3)
+```
+
+The data for the different groups are almost overlapping: no particular trend emerges.
+
+#### **NUMERICAL COMPARISON:**
+
+We check whether there are interesting characteristics also from a numerical point of view. We use the means of the various features in the different subgroups as a metric.
+
+```{r}
+colMeans(data_11)
+
+colMeans(data_10)
+
+colMeans(data_01)
+
+colMeans(data_00)
+```
+
+Means from each groups:
+
+|                            |            |         |         |           |
+|----------------------------|:----------:|:-------:|:-------:|:---------:|
+| **Attribute**              |  **1-1**   | **1-0** | **0-1** |  **0-0**  |
+| [Age]{.ul}                 |   61.34    |  59.22  |  51.12  |   53.11   |
+| [Gender]{.ul}              |    0.48    |  0.49   |  0.49   |   0.50    |
+| [Family Members]{.ul}      |    2.60    |  2.50   |  2.54   |   2.44    |
+| [Financial Education]{.ul} |    0.45    |  0.42   |  0.42   |   0.40    |
+| [RiskPropensity]{.ul}      |    0.39    |  0.36   |  0.36   |   0.35    |
+| [Income]{.ul}              | **87.83**  |  60.54  |  68.42  | **42.50** |
+| [Wealth]{.ul}              | **177.45** | 110.16  |  63.83  | **59.78** |
+
+**STUDYING THE PERFECT TARGET: 1-1**
+
+Now, we study our perfect target: 1-1 clients. In particular we want to study the differences between this subgroup and all the rest of the data.
+
+Defining the remaining data:
+
+```{r}
+labels <- which((dataor$IncomeInvestment == 0) | (dataor$AccumulationInvestment == 0)) 
+data <- dataor[labels,]
+
+head(data)
+```
+
+```{r}
+colMeans(data_11)
+colMeans(data)
+```
+
+11 vs 01/10/00:
+
+| Attribute                 |   11   | 01/10/00 |    Differences     |
+|:--------------------------|:------:|:--------:|:------------------:|
+| [Age]{.ul}                | 61.34  |  53.73   |    Older in 1-1    |
+| [Gender]{.ul}             |  0.48  |   0.5    |        Same        |
+| [FamilyMembers:]{.ul}     |  2.6   |   2.5    |        Same        |
+| [FinancialEducation]{.ul} |  0.45  |   0.41   |        Same        |
+| [RiskPropensity]{.ul}     |  0.39  |   0.36   |        Same        |
+| [Income vs]{.ul}          | 87.83  |   56.8   |   Richer in 1-1    |
+| [Wealth]{.ul}             | 177.45 |  72.95   | More Wealth in 1-1 |
+
+**SPLITTING DATASET: Training and Test sets**
+
+We first mix the data, to avoid trends given by the original order.
+
+```{r}
+set.seed(13)
+NewLabels <- sample( 1:5000, 5000, replace = F)
+
+Mixed_up_data <- dataor[NewLabels,]
+head(Mixed_up_data)
+
+```
+
+Now, let's define the Training set: it will consist of 80% of the original data.
+
+```{r}
+nObsTrain <- 0.8*(dim(dataor)[1])
+Train <- as.data.frame(Mixed_up_data[1:nObsTrain,])
+head(Train)
+```
+
+Now, we define the Test set: it will consist of the remaining 20% of the data.
+
+```{r}
+Test <- as.data.frame(Mixed_up_data[(nObsTrain+1):(dim(dataor)[1]),])
+head(Test)
+```
+
+```{r}
+# For Saving Train and Test dataset:
+
+#write.table(Train, file = 'Train.txt')
+#write.table(Test, file = 'Test.txt')
+```
+
+#### **LOGISTIC REGRESSION**
+
+We decided to perform two logistic regressions to predict the variables Income Investment and Accumulation Investment, respectively. This type of analysis comes in handy to understand which features are significant in the prediction process and will allow us to create classifiers containing significant variables.
+
+Let's start with the variable Income Investment:
+
+```{r message=FALSE, warning=FALSE}
+
+attach(Train)
+IncomeInvestment <- as.factor(IncomeInvestment)
+
+fitI <- glm(IncomeInvestment  ~ Age + factor(Gender) + FamilyMembers + FinancialEducation +RiskPropensity + Income + Wealth, family = 'binomial') 
+summary(fitI)
+
+detach(Train)
+
+```
+
+Here we have confirmation that the variable Risk Propensity is not significant for predicting responses, in fact it has a very high p-value.
+
+After removing no significant variables Gender and RiskPropensity, we obtain:
+
+```{r message=FALSE, warning=FALSE}
+attach(Train)
+IncomeInvestment <- as.factor(IncomeInvestment)
+
+fitI <- glm(IncomeInvestment  ~ Age + FamilyMembers + FinancialEducation + Income + Wealth, family = 'binomial') 
+summary(fitI)
+
+detach(Train)
+```
+
+AIC lower =\> improved model!
+
+AIC lower =\> improved model!
+
+**Conclusions**: in the prediction of the variable Income Investment play a key role:
+
+-   The **Income** variable: negatively correlated, supporting the thesis brought forward by graphical analysis;
+
+-   The **Wealth** variable: positively correlated;
+
+-   The **Age** variable: positively correlated.
+
+Now, we continue with the variable Accumulation Investment:
+
+```{r message=FALSE, warning=FALSE}
+attach(Train)
+AccumulationInvestment <- as.factor(AccumulationInvestment)
+
+fitA <- glm(AccumulationInvestment  ~ Age + factor(Gender) + FamilyMembers + FinancialEducation +RiskPropensity + Income + Wealth, family = 'binomial') 
+summary(fitA)
+
+detach(Train)
+```
+
+Removing some no significant variables:
+
+```{r message=FALSE, warning=FALSE}
+attach(Train)
+AccumulationInvestment <- as.factor(AccumulationInvestment)
+
+fitA <- glm(AccumulationInvestment  ~ Age + FamilyMembers + FinancialEducation+ Income + Wealth, family = 'binomial') 
+summary(fitA)
+
+detach(Train)
+```
+
+AIC lower =\> improved model!
+
+**Conclusions**: in the prediction of the variable Accumulation Investment play a key role:
+
+-   The **Income** variable : positively correlated;
+
+-   The **Age** variable: negatively correlated.
+
+-   The variable **Financial Education**: with a significant p-value with an alpha at about 6%, is also positively correlated.
+
+# **PCA**
+
+At this stage, we perform a principal component analysis (PCA) for each of these subgroups: this technique will come in handy for the next clustering step.
+
+At this point we divide the **Training dataset** into the usual 4 subgroups: 1-1, 1-0, 0-1, 0-0.
+
+```{r}
+labels_11 <- which((Train$IncomeInvestment ==1) & (Train$AccumulationInvestment == 1)) 
+data_11 <- Train[labels_11,]
+head(data_11)
+```
+
+```{r}
+labels_10 <- which((Train$IncomeInvestment == 1) & (Train$AccumulationInvestment == 0)) 
+data_10 <- Train[labels_10,]
+head(data_10)
+```
+
+```{r}
+labels_01 <- which((Train$IncomeInvestment ==0) & (Train$AccumulationInvestment == 1)) 
+data_01 <- Train[labels_01,]
+head(data_01)
+```
+
+```{r}
+labels_00 <- which((Train$IncomeInvestment ==0) & (Train$AccumulationInvestment == 0)) 
+data_00 <- Train[labels_00,]
+head(data_00)
+```
+
+**DATA CLUSTER-FRIENDLY**
+
+We remove variables that are not significant for prediction purposes.
+
+Data 10:
+
+```{r fig.align = 'center' }
+
+data <- data_10
+data <- data[-1]   #REMOVE Numerical ID
+data <- data[-9]   #REMOVE IncomeInvestment
+data <- data[-8]   #REMOVE AccumulationInvestment
+data <- data[-5]   #REMOVE RiskPropensity
+data <- data[-2]   #REMOVE Gender
+
+data_10_c <- data
+#head(data_10_c)
+```
+
+Data 01:
+
+```{r fig.align = 'center' }
+
+data <- data_01
+data <- data[-1]  #REMOVE Numerical ID
+data <- data[-9]   #REMOVE IncomeInvestment
+data <- data[-8]   #REMOVE AccumulationInvestment
+data <- data[-5]   #REMOVE RiskPropensity
+data <- data[-2]   #REMOVE Gender
+
+data_01_c <- data
+#head(data_01_c)
+```
+
+Data 00:
+
+```{r fig.align = 'center' }
+
+data <- data_00
+data <- data[-1]  #REMOVE Numerical ID
+data <- data[-9]   #REMOVE IncomeInvestment
+data <- data[-8]   #REMOVE AccumulationInvestment
+data <- data[-5]   #REMOVE RiskPropensity
+data <- data[-2]   #REMOVE Gender
+
+data_00_c <- data
+#head(data_00_c)
+```
+
+#### **PCA 1-0**
+
+We perform PCA on subgroup 1-0:
+
+```{r}
+data <- data_10_c
+data <- scale(data)
+n <- dim(data)[1]
+p <- dim(data)[2]
+# performing PCA:
+pc.data <- princomp(data, scores=T)
+summary(pc.data)
+```
+
+Standard deviation of the components (square root of eigenvalues):
+
+```{r}
+pc.data$sd
+```
+
+Proportion of variance explained by each Principal Component:
+
+```{r}
+pc.data$sd^2/sum(pc.data$sd^2)
+```
+
+Cumulative proportion of explained variance:
+
+```{r}
+cumsum(pc.data$sd^2)/sum(pc.data$sd^2)
+```
+
+Now we plot all the loadings:
+
+```{r}
+load.data <- pc.data$loadings
+# plotting all loadings
+n_bar <- ceiling(p/2)
+par(mfrow = c(2,n_bar))
+for(i in 1:p) barplot(load.data[,i], ylim = c(-1, 1), main=paste('PC',i))
+
+```
+
+It is interesting to note that the 3rd principal component consists almost entirely of the variable: FamilyMembers. Indeed, we will note that this feature will induce the division into 4 groups in the 3D representation of the data.
+
+Plotting results (Screeplot on the right):
+
+```{r}
+varmax <- max(var(data[,1:dim(data)[2]]))
+varmax_pc <- max(pc.data$sd)
+layout(matrix(c(2,3,1,3),2,byrow=T))
+plot(pc.data, las=2, main='Principal components', ylim=c(0,varmax_pc^2))
+barplot(sapply(data,sd)^2, las=2, main='Original Variables', ylim=c(0,varmax),
+        ylab='Variances')
+plot(cumsum(pc.data$sd^2)/sum(pc.data$sd^2), type='b', axes=F, 
+     xlab='number of components', ylab='contribution to the total variance', ylim=c(0,1))
+abline(h=1, col='blue')
+abline(h=0.8, lty=2, col='blue')
+box()
+axis(2,at=0:10/10,labels=0:10/10)
+axis(1,at=1:ncol(data),labels=1:ncol(data),las=2)
+```
+
+Since 3 principal components explain **more than 80% of the variability in the data**, we decide to continue by **keeping only 3** of them.
+
+```{r}
+scores_10 <- as.data.frame(pc.data$scores)
+data_10_pc <- scores_10[1:3] 
+head(data_10_pc)
+```
+
+#### **PCA 0-1**
+
+We perform PCA on subgroup 0-1:
+
+```{r}
+data <- data_01_c
+data <- scale(data)
+n <- dim(data)[1]
+p <- dim(data)[2]
+# performing PCA:
+pc.data <- princomp(data, scores=T)
+summary(pc.data)
+```
+
+Standard deviation of the components (square root of eigenvalues):
+
+```{r}
+pc.data$sd
+```
+
+Proportion of variance explained by each Principal Component:
+
+```{r}
+pc.data$sd^2/sum(pc.data$sd^2)
+```
+
+Cumulative proportion of explained variance:
+
+```{r}
+cumsum(pc.data$sd^2)/sum(pc.data$sd^2)
+```
+
+Now we plot all the loadings:
+
+```{r}
+load.data <- pc.data$loadings
+# plotting all loadings
+n_bar <- ceiling(p/2)
+par(mfrow = c(2,n_bar))
+for(i in 1:p) barplot(load.data[,i], ylim = c(-1, 1), main=paste('PC',i))
+
+```
+
+Plotting results (Screeplot on the right):
+
+```{r}
+varmax <- max(var(data[,1:dim(data)[2]]))
+varmax_pc <- max(pc.data$sd)
+layout(matrix(c(2,3,1,3),2,byrow=T))
+plot(pc.data, las=2, main='Principal components', ylim=c(0,varmax_pc^2))
+barplot(sapply(data,sd)^2, las=2, main='Original Variables', ylim=c(0,varmax),
+        ylab='Variances')
+plot(cumsum(pc.data$sd^2)/sum(pc.data$sd^2), type='b', axes=F, 
+     xlab='number of components', ylab='contribution to the total variance', ylim=c(0,1))
+abline(h=1, col='blue')
+abline(h=0.8, lty=2, col='blue')
+box()
+axis(2,at=0:10/10,labels=0:10/10)
+axis(1,at=1:ncol(data),labels=1:ncol(data),las=2)
+```
+
+Since 3 principal components explain **more than 80% of the variability in the data**, we decide to continue by **keeping only 3** of them.
+
+```{r}
+scores_01 <- as.data.frame(pc.data$scores)
+data_01_pc <- scores_01[1:3] 
+head(data_01_pc)
+```
+
+#### **PCA 0-0**
+
+We perform PCA on subgroup 0-0:
+
+```{r}
+data <- data_00_c
+data <- scale(data)
+n <- dim(data)[1]
+p <- dim(data)[2]
+# performing PCA:
+pc.data <- princomp(data, scores=T)
+summary(pc.data)
+```
+
+Standard deviation of the components (square root of eigenvalues):
+
+```{r}
+pc.data$sd
+```
+
+Proportion of variance explained by each Principal Component:
+
+```{r}
+pc.data$sd^2/sum(pc.data$sd^2)
+```
+
+Cumulative proportion of explained variance:
+
+```{r}
+cumsum(pc.data$sd^2)/sum(pc.data$sd^2)
+```
+
+Now we plot all the loadings:
+
+```{r}
+load.data <- pc.data$loadings
+# plotting all loadings
+n_bar <- ceiling(p/2)
+par(mfrow = c(2,n_bar))
+for(i in 1:p) barplot(load.data[,i], ylim = c(-1, 1), main=paste('PC',i))
+
+```
+
+Plotting results (Screeplot on the right):
+
+```{r}
+varmax <- max(var(data[,1:dim(data)[2]]))
+varmax_pc <- max(pc.data$sd)
+layout(matrix(c(2,3,1,3),2,byrow=T))
+plot(pc.data, las=2, main='Principal components', ylim=c(0,varmax_pc^2))
+barplot(sapply(data,sd)^2, las=2, main='Original Variables', ylim=c(0,varmax),
+        ylab='Variances')
+plot(cumsum(pc.data$sd^2)/sum(pc.data$sd^2), type='b', axes=F, 
+     xlab='number of components', ylab='contribution to the total variance', ylim=c(0,1))
+abline(h=1, col='blue')
+abline(h=0.8, lty=2, col='blue')
+box()
+axis(2,at=0:10/10,labels=0:10/10)
+axis(1,at=1:ncol(data),labels=1:ncol(data),las=2)
+```
+
+Since 3 principal components explain **more than 80% of the variability in the data**, we decide to continue by **keeping only 3** of them.
+
+```{r}
+scores_00 <- as.data.frame(pc.data$scores)
+data_00_pc <- scores_00[1:3] 
+head(data_00_pc)
+```
+
+------------------------------------------------------------------------
+
+# **CLUSTERING**
+
+At this point we perform clustering on the principal components of each of these 3 datasets: this will allow us to obtain certain clusters that we will find to be very similar to our ideal cluster (1-1). We call these clusters: "**transition clusters**," since if customers fall here, it means that they can be identified as ideal customers (1-1).
+
+These clusters will be useful in later stages when we try to predict new labels on a test dataset: the moment the predicted data fall into the transition clusters, they will be classified as 1-1 data. This will allow our ideal target to expand, while also correcting possible errors in the classifiers.
+
+We tried various methods to do clustering, but **hierarchical clustering** performed better than the other methods. We also, tried various types of distances: EUCLIDEAN, MANHATTAN, CANBERRA (see the code *FINAL_PROJECT_All.Rmd*), but here we reported only the distances that performed best for the purposes of our project.
+
+#### **Data 10: Hierarchical Clustering, EUCLIDEAN DISTANCE**
+
+We perform hierarchical clustering using 4 types of linkages: Single, Average, Complete and Ward.D2, and then choose the best one.
+
+(The best performing distance was found to be the Euclidean Distance)
+
+```{r}
+data <- data_10_pc
+n <- dim(data)[1]
+p <- dim(data)[2]
+
+# setting distance
+distance <- 'euclidean' # manhattan, canberra
+linkages <- c('single', 'average', 'complete', 'ward.D2')
+
+# distance matrix:
+data.dist <- dist(data, method=distance)
+
+# perform hierarchical clustering:
+data.s <- hclust(data.dist, method=linkages[1])
+data.a <- hclust(data.dist, method=linkages[2])
+data.c <- hclust(data.dist, method=linkages[3])
+data.w <- hclust(data.dist, method=linkages[4])
+
+# plot dendograms:
+par(mfrow=c(2,2))
+plot(data.s, main=paste(distance, ' - ', linkages[1]), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+plot(data.a, main=paste(distance, ' - ', linkages[2]), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+plot(data.c, main=paste(distance, ' - ', linkages[3]), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+plot(data.w, main=paste(distance, ' - ', linkages[4]), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+
+```
+
+From the dendogram we see that the best linkage seems to be **Ward**, as the clusters are better distributed and explain larger variability.
+
+Again, after several attempts we have chosen **4** as the **number of clusters**, as we can better differentiate features between different clusters with this choice.
+
+```{r}
+# cut dendogram:
+k <- 4
+linkage <- 'ward.D2'
+data.hc <- data.w
+
+par(mfrow=c(1,1))
+plot(data.hc, main=paste(distance, ' - ', linkage), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+rect.hclust(data.hc, k=k)
+
+
+clusters <- cutree(data.hc, k=k)
+
+```
+
+Here there is a 3d representation of the clusters!\
+**PS: IT IS INTERACTIVE, YOU CAN MOVE THE 3D SPACE WITH THE MOUSE!**
+
+```{r}
+plot3d(data_10_pc, size=3, col = clusters + 1)
+rglwidget()
+```
+
+The data seems well divided. In this plot there is confirmation that the data have FamilyMembers as the third Principal Component: the data appear to be split into 4 bands, which fortunately are not mirrored by the clusters obtained, which would be almost useless if they only explained the split by family members.
+
+Now, we evaluate the obtained clusters, seeing if there is a cluster that has characteristics in common with our ideal target.
+
+```{r}
+
+cluster.cw <- clusters
+
+# CLUSTER EXPLORATION 
+table(cluster.cw)
+
+data_labeled_E <- data.frame(data_10, cluster.cw)
+
+# CLUSTER 1
+c1 <-c()
+c1obs <- which(data_labeled_E$cluster.cw == 1)
+c1 <- data.frame(data_labeled_E[c1obs,])
+
+# CLUSTER 2
+c2 <-c()
+c2obs <- which(data_labeled_E$cluster.cw == 2)
+c2 <- data.frame(data_labeled_E[c2obs,])
+
+# CLUSTER 3
+c3 <-c()
+c3obs <- which(data_labeled_E$cluster.cw == 3)
+c3 <- data.frame(data_labeled_E[c3obs,])
+
+# CLUSTER 4
+c4 <-c()
+c4obs <- which(data_labeled_E$cluster.cw == 4)
+c4 <- data.frame(data_labeled_E[c4obs,])
+
+head(data_labeled_E)
+
+```
+
+```{r}
+colMeans(c1[-1])
+colMeans(c2[-1])
+colMeans(c3[-1])
+colMeans(c4[-1])
+```
+
+First cluster would be the one switching to 1-1. In fact, evaluating the means of significant features:
+
+-   **Age** (64) is very similar to the average one of the ideal target 1-1, which is of 61.34;
+
+-   **Income** 113.708 \> 87.83 (average income in the ideal cluster 1-1);
+
+-   **Wealth** 195.3 \> 177.45 (average wealth in the ideal cluster 1-1).
+
+So the **transition cluster** for data 1 - 0 is the **first**!
+
+```{r}
+c1_10 <- c1
+c2_10 <- c2
+c3_10 <- c3
+c4_10 <- c4
+data_labeled_10 <- data_labeled_E
+```
+
+#### **Data 01: Hierarchical Clustering, MANHATTAN DISTANCE**
+
+We perform hierarchical clustering using 4 types of linkages: Single, Average, Complete and Ward.D2, and then choose the best one.
+
+(The best performing distance was found to be the Manhattan distance)
+
+```{r}
+data <- data_01_pc
+n <- dim(data)[1]
+p <- dim(data)[2]
+
+# setting distance
+distance <- 'manhattan'
+linkages <- c('single', 'average', 'complete', 'ward.D2')
+
+# distance matrix:
+data.dist <- dist(data, method=distance)
+
+# perform hierarchical clustering:
+data.s <- hclust(data.dist, method=linkages[1])
+data.a <- hclust(data.dist, method=linkages[2])
+data.c <- hclust(data.dist, method=linkages[3])
+data.w <- hclust(data.dist, method=linkages[4])
+
+# plot dendograms:
+par(mfrow=c(2,2))
+plot(data.s, main=paste(distance, ' - ', linkages[1]), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+plot(data.a, main=paste(distance, ' - ', linkages[2]), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+plot(data.c, main=paste(distance, ' - ', linkages[3]), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+plot(data.w, main=paste(distance, ' - ', linkages[4]), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+
+```
+
+From the dendogram we see that the best linkage seems to be **Ward**, as the clusters are better distributed and explain larger variability.
+
+Again, after several attempts we have chosen **7** as the **number of clusters**, as we can better differentiate features between different clusters with this choice.
+
+```{r}
+# cut dendogram:
+k <- 7
+linkage <- 'ward.D2'
+data.hc <- data.w
+
+par(mfrow=c(1,1))
+plot(data.hc, main=paste(distance, ' - ', linkage), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+rect.hclust(data.hc, k=k)
+
+
+clusters <- cutree(data.hc, k=k)
+```
+
+Here there is a 3d representation of the clusters!\
+**PS: IT IS INTERACTIVE, YOU CAN MOVE THE 3D SPACE WITH THE MOUSE!**
+
+```{r}
+plot3d(data_01_pc, size=3, col = clusters + 1)
+rglwidget()
+```
+
+Now, we evaluate the obtained clusters, seeing if there is a cluster that has characteristics in common with our ideal target.
+
+```{r}
+cluster.cw <- clusters
+
+# CLUSTER EXPLORATION 
+table(cluster.cw)
+
+data_labeled_M <- data.frame(data_01, cluster.cw)
+
+# CLUSTER 1
+c1 <-c()
+c1obs <- which(data_labeled_M$cluster.cw == 1)
+c1 <- data.frame(data_labeled_M[c1obs,])
+
+# CLUSTER 2
+c2 <-c()
+c2obs <- which(data_labeled_M$cluster.cw == 2)
+c2 <- data.frame(data_labeled_M[c2obs,])
+
+# CLUSTER 3
+c3 <-c()
+c3obs <- which(data_labeled_M$cluster.cw == 3)
+c3 <- data.frame(data_labeled_M[c3obs,])
+
+# CLUSTER 4
+c4 <-c()
+c4obs <- which(data_labeled_M$cluster.cw == 4)
+c4 <- data.frame(data_labeled_M[c4obs,])
+
+# CLUSTER 5
+c5 <-c()
+c5obs <- which(data_labeled_M$cluster.cw == 5)
+c5 <- data.frame(data_labeled_M[c5obs,])
+
+# CLUSTER 6
+c6 <-c()
+c6obs <- which(data_labeled_M$cluster.cw == 6)
+c6 <- data.frame(data_labeled_M[c6obs,])
+
+# CLUSTER 7
+c7 <-c()
+c7obs <- which(data_labeled_M$cluster.cw == 7)
+c7 <- data.frame(data_labeled_M[c7obs,])
+
+head(data_labeled_M)
+
+```
+
+```{r}
+colMeans(c1[-1])
+colMeans(c2[-1])
+colMeans(c3[-1])
+colMeans(c4[-1])
+colMeans(c5[-1])
+colMeans(c6[-1])
+colMeans(c7[-1])
+```
+
+7th cluster would be the one switching to 1-1. In fact, evaluating the means of significant features:
+
+-   **Income** 156.41 \> 87.83 (average income in the ideal cluster 1-1);
+
+-   **Wealth** 174.40 is equal to the average wealth in the ideal cluster 1-1, which is 177.45.
+
+**Age** (51.56) is lower than the average for the ideal cluster (61.34), however, this is not a constraint for us, so it does not limit us from considering them suitable for either type of investment.
+
+So the **transition cluster** for data 1 - 0 is the **seventh**!
+
+```{r}
+c1_01 <- c1
+c2_01 <- c2
+c3_01 <- c3
+c4_01 <- c4
+c5_01 <- c5
+c6_01 <- c6
+c7_01 <- c7
+data_labeled_01 <- data_labeled_M
+```
+
+#### **Data 00: Hierarchical Clustering, EUCLIDEAN DISTANCE**
+
+We perform hierarchical clustering using 4 types of linkages: Single, Average, Complete and Ward.D2, and then choose the best one.
+
+(The best performing distance was found to be the Euclidean distance)
+
+```{r}
+data <- data_00_pc
+n <- dim(data)[1]
+p <- dim(data)[2]
+
+# setting distance
+distance <- 'euclidean' # manhattan, canberra
+linkages <- c('single', 'average', 'complete', 'ward.D2')
+
+# distance matrix:
+data.dist <- dist(data, method=distance)
+
+# perform hierarchical clustering:
+data.s <- hclust(data.dist, method=linkages[1])
+data.a <- hclust(data.dist, method=linkages[2])
+data.c <- hclust(data.dist, method=linkages[3])
+data.w <- hclust(data.dist, method=linkages[4])
+
+# plot dendograms:
+par(mfrow=c(2,2))
+plot(data.s, main=paste(distance, ' - ', linkages[1]), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+plot(data.a, main=paste(distance, ' - ', linkages[2]), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+plot(data.c, main=paste(distance, ' - ', linkages[3]), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+plot(data.w, main=paste(distance, ' - ', linkages[4]), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+```
+
+From the dendogram we see that the best linkage seems to be **Ward**, as the clusters are better distributed and explain larger variability.
+
+Again, after several attempts we have chosen **6** as the **number of clusters**, as we can better differentiate features between different clusters with this choice.
+
+```{r}
+# cut dendogram:
+k <- 6
+linkage <- 'ward.D2'
+data.hc <- data.w
+
+par(mfrow=c(1,1))
+plot(data.hc, main=paste(distance, ' - ', linkage), hang=-0.1, xlab='', labels=F, cex=0.6, sub='')
+rect.hclust(data.hc, k=k)
+
+
+clusters <- cutree(data.hc, k=k)
+
+```
+
+Here there is a 3d representation of the clusters!\
+**PS: IT IS INTERACTIVE, YOU CAN MOVE THE 3D SPACE WITH THE MOUSE!**
+
+```{r}
+plot3d(data_00_pc, size=3, col = clusters + 1)
+rglwidget()
+```
+
+Now, we evaluate the obtained clusters, seeing if there is a cluster that has characteristics in common with our ideal target.
+
+```{r}
+
+cluster.cw <- clusters
+
+# CLUSTER EXPLORATION 
+table(cluster.cw)
+
+data_labeled_E <- data.frame(data_00, cluster.cw)
+
+# CLUSTER 1
+c1 <-c()
+c1obs <- which(data_labeled_E$cluster.cw == 1)
+c1 <- data.frame(data_labeled_E[c1obs,])
+
+# CLUSTER 2
+c2 <-c()
+c2obs <- which(data_labeled_E$cluster.cw == 2)
+c2 <- data.frame(data_labeled_E[c2obs,])
+
+# CLUSTER 3
+c3 <-c()
+c3obs <- which(data_labeled_E$cluster.cw == 3)
+c3 <- data.frame(data_labeled_E[c3obs,])
+
+# CLUSTER 4
+c4 <-c()
+c4obs <- which(data_labeled_E$cluster.cw == 4)
+c4 <- data.frame(data_labeled_E[c4obs,])
+
+# CLUSTER 5
+c5 <-c()
+c5obs <- which(data_labeled_E$cluster.cw == 5)
+c5 <- data.frame(data_labeled_E[c5obs,])
+
+# CLUSTER 6
+c6 <-c()
+c6obs <- which(data_labeled_E$cluster.cw == 6)
+c6 <- data.frame(data_labeled_E[c6obs,])
+
+# CLUSTER 7
+c7 <-c()
+c7obs <- which(data_labeled_E$cluster.cw == 7)
+c7 <- data.frame(data_labeled_E[c7obs,])
+
+# CLUSTER 8
+c8 <-c()
+c8obs <- which(data_labeled_E$cluster.cw == 8)
+c8 <- data.frame(data_labeled_E[c8obs,])
+
+head(data_labeled_E)
+
+```
+
+```{r}
+colMeans(c1[-1])
+colMeans(c2[-1])
+colMeans(c3[-1])
+colMeans(c4[-1])
+colMeans(c5[-1])
+colMeans(c6[-1])
+```
+
+6th cluster would be the one switching to 1-1. In fact, evaluating the means of significant features:
+
+-   **Age** (60.4) is almost identical to the average one of the ideal target 1-1, which is of 61.34;
+
+-   **Income** 119.54 \> 87.83 (average income in the ideal cluster 1-1);
+
+-   **Wealth** 150.46 \> 177.45 (average wealth in the ideal cluster 1-1).
+
+So the **transition cluster** for data 1 - 0 is the **sixth**!
+
+```{r}
+c1_00 <- c1
+c2_00 <- c2
+c3_00 <- c3
+c4_00 <- c4
+c5_00 <- c5
+c6_00 <- c6
+data_labeled_00 <- data_labeled_E
+```
+
+# **CLASSIFIERS**
+
+After several attempts to identify the best classifiers (see codes *FINAL_PROJECT_All.Rmd* and *FINAL_PROJECT_All.mat*), we have reported here the best performing ones for our purposes.
+
+#### **Income Investment classifier: Logistic Regression**
+
+The best performing model for predicting Income Investment turns out to be *fitI*, defined in Data Exploration: with this model we will evaluate the test dataset.
+
+#### **Accumulation Investment classifier: Ensemble tree (Bagged)**
+
+The best performing model for predicting Accumulation Investment turns out to be an *Ensemble tree (Bagged)*, defined in *FINAL_PROJECT.mat* : with this model we will evaluate the test dataset.
+
+# **TEST**
+
+At this stage we can apply the previously created classifiers on the test dataset.
+
+#### **Logistic Regression**
+
+We make prediction on response Income Investment through logistic regression model:
+
+```{r}
+## pointwise estimate for the proportion of y for specific regressors:
+I_response <- predict(fitI, Test, type='response')
+
+for(i in 1:(dim(Test)[1])) {
+        
+          if (I_response[i]< 0.37){
+        I_response[i] <-0
+        } else {
+        I_response[i] <-1
+        } 
+}
+```
+
+We can see that we start with **unbalanced original classes**:
+
+```{r}
+table(Test$IncomeInvestment)
+```
+
+But, we were able to get around the problem by imposing the 0.37 threshold, which is used to classify clients into one of the classes. Thus, the logistic regression will be "**weighted**."
+
+```{r}
+table(I_response)
+```
+
+Confusion Matrix:
+
+```{r}
+#create confusion matrix
+confusionmatrix <- table(I_response, Test$IncomeInvestment)
+confusionmatrix
+```
+
+Misclassification error rate:
+
+```{r}
+#calculate total misclassification error rate
+misClassError <- (confusionmatrix[2,1] + confusionmatrix[1,2])/(confusionmatrix[2,1] + confusionmatrix[1,2] + confusionmatrix[1,1] + confusionmatrix[2,2])
+misClassError
+```
+
+Other metrics:
+
+```{r}
+labelsI <- I_response
+yInvIncTest <- Test$IncomeInvestment
+        
+tp = sum((labelsI == 1) & (yInvIncTest == 1))
+fp = sum((labelsI == 1) & (yInvIncTest == 0))
+fn = sum((labelsI == 0) & (yInvIncTest == 1))
+```
+
+Precision:
+
+```{r}
+#computation of precision
+prec = tp / (tp + fp)
+prec
+```
+
+Recall:
+
+```{r}
+# Recall computation
+rec = tp / (tp + fn)
+rec
+```
+
+F1 score:
+
+```{r}
+# F1 score
+F1 = 2 * prec * rec / (prec + rec)
+F1
+```
+
+FBeta:
+
+```{r}
+#FBeta score
+beta=1.5
+FBeta= ((1+beta^2) *(prec * rec)) / (beta^2*prec + rec)
+FBeta
+```
+
+Now, we attach the predicted labels to the Test dataset.
+
+```{r}
+Test <-cbind(Test,I_response)
+head(Test)
+```
+
+#### **Ensemble tree optimized logit boost (Income) + Ensemble tree bucket (Accumulation)**
+
+On the code: *FINAL_PROJECT.mat* you can view the code where we applied the Ensemble model on the Test dataset, as well as evaluated the various metrics.
+
+These are the predicted responses, which we import:
+
+```{r}
+Definitive_Labels <- read_excel("C:/Users/39346/Desktop/University/FINTECH/Final Project/Definitive_Labels.xlsx")
+A_response <- Definitive_Labels$A_response
+Test$A_response <- A_response
+
+```
+
+#### **Analysis of results: pre-clustering**
+
+We evaluate the frequencies of the actual responses vs those predicted by our models, before clustering.
+
+Original labels:
+
+```{r}
+T_Original <- table(Test$IncomeInvestment,Test$AccumulationInvestment)
+T_Original
+```
+
+Predicted labels:
+
+```{r}
+T_Predicted <- table(Test$I_response,Test$A_response)
+T_Predicted
+```
+
+SINGLE LABELS:
+
+Original labels:
+
+```{r}
+T_Original_I <- table(Test$IncomeInvestment)
+T_Original_I
+
+T_Original_A <- table(Test$AccumulationInvestment)
+T_Original_A
+```
+
+Predicted labels:
+
+```{r}
+T_Predicted_I <- table(Test$I_response)
+T_Predicted_I
+
+T_Predicted_A <- table(Test$A_response)
+T_Predicted_A
+```
+
+We notice that the number of people 1-1 (ideal customers) is smaller than in reality, so we try to fix these misclassification errors with the clustering process, where we will identify **transition clusters**.
+
+We use a **QDA classifier** (Quadratic Discriminant Analysis) to figure out whether the clients are in transition clusters, which we have previously defined. If yes, they will be sent to the ideal 1-1 cluster.
+
+#### **QDA cluster 10**
+
+```{r}
+#### QDA: Univariate Quadratic Discriminant Analysis ####
+
+data <- data_labeled_10 
+data <- data[-1]  #REMOVE Numerical ID
+data <- data[-9]   #REMOVE IncomeInvestment
+data <- data[-8]   #REMOVE AccumulationInvestment
+data <- data[-5]   #REMOVE RiskPropensity
+data <- data[-2]   #REMOVE Gender
+
+
+n <- dim(data)[1]
+p <- dim(data)[2] - 1 
+
+groups <- levels(factor(data$cluster.cw)) 
+g <- length(groups)
+
+id1 <- which(data$cluster.cw==groups[1]) 
+id2 <- which(data$cluster.cw==groups[2]) 
+id3 <- which(data$cluster.cw==groups[3])
+id4 <- which(data$cluster.cw==groups[4]) 
+
+id <- c(id1, id2, id3, id4) 
+
+n1 <- length(id1)
+n2 <- length(id2)
+n3 <- length(id3)
+n4 <- length(id4) 
+
+data2 <- data
+data2$cluster.cw <- NULL 
+```
+
+```{r}
+# performing QDA:
+data.qda <- qda(data2, data$cluster.cw)
+data.qda
+```
+
+Misclassification table:
+
+```{r}
+qda.pred <- predict(data.qda, data2) # assigned class to our dataset
+table(class.true=data$cluster.cw, class.assigned=qda.pred$class) # misclassification table 
+errors <- (qda.pred$class != data$cluster.cw) 
+```
+
+**APER**: Actual Predictor Error Rate - with empirical frequencies. Namely the total number of mistakes over the total number of data.
+
+```{r}
+APER <- sum(errors)/n
+APER
+```
+
+**AER**: Actual Error Rate - with empirical frequencies:
+
+```{r}
+
+## AER: Actual Error Rate - with empirical frequencies
+# Compute AER via loo-CV.
+# set CV=TRUE for Leave-one-out Cross Validation
+data.qdaCV <- qda(data2, data$cluster.cw, CV=TRUE) #prior=priors 
+
+# misclassification table:
+misc <- table(class.true=data$cluster.cw, class.assignedCV=data.qdaCV$class) 
+
+errorsCV <- (data.qdaCV$class != data$cluster.cw) 
+
+AERCV <- sum(errorsCV)/n
+AERCV
+
+```
+
+```{r}
+### PREDICTION of a new datum
+
+Labels_Predicted_10 <- which((Test$I_response ==1) & (Test$A_response == 0)) 
+Predicted_10 <- Test[Labels_Predicted_10,]
+head(Predicted_10)     
+        
+```
+
+```{r}
+data <- Predicted_10 
+
+data <- data[-1]   #REMOVE Numerical ID
+data <- data[-9]   #REMOVE IncomeInvestment
+data <- data[-8]   #REMOVE AccumulationInvestment
+data <- data[-5]   #REMOVE RiskPropensity
+data <- data[-2]   #REMOVE Gender
+data <- data[-7]   #REMOVE A_response
+data <- data[-6]   #REMOVE I_response
+
+cluster10 <- predict(data.qda,data)$class
+table(cluster10)
+
+```
+
+These are the results of the classifier: **29 people will switch to cluster 1-1** (Cluster 1).
+
+```{r}
+Predicted_10 <- cbind(Predicted_10, cluster10)
+labels_10to11 <- which((Predicted_10$cluster10 == 1)) 
+data_10to11 <- Predicted_10[labels_10to11,]
+head(data_10to11)     
+```
+
+Definitive labels:
+
+We save the client IDs that we will move to category 1-1.
+
+```{r}
+ID <- data_10to11$ID
+ID
+```
+
+We replace the new labels:
+
+```{r}
+
+data_10to11 <- data_10to11[-13] 
+
+i <- 0
+for(i in ID) {
+  
+label <- which(Test$ID == i) 
+Test[label,12] <- 1
+
+}
+
+```
+
+Definitive labels (for now..):
+
+```{r}
+T_Def <- table(Test$I_response,Test$A_response)
+```
+
+```{r}
+T_Predicted
+T_Def
+```
+
+#### **QDA cluster 01**
+
+```{r}
+#### QDA: Univariate Quadratic Discriminant Analysis ####
+
+data <- data_labeled_01 
+data <- data[-1]  #REMOVE Numerical ID
+data <- data[-9]   #REMOVE IncomeInvestment
+data <- data[-8]   #REMOVE AccumulationInvestment
+data <- data[-5]   #REMOVE RiskPropensity
+data <- data[-2]   #REMOVE Gender
+
+
+n <- dim(data)[1]
+p <- dim(data)[2] - 1 
+
+groups <- levels(factor(data$cluster.cw)) 
+g <- length(groups)
+
+id1 <- which(data$cluster.cw==groups[1]) 
+id2 <- which(data$cluster.cw==groups[2]) 
+id3 <- which(data$cluster.cw==groups[3])
+id4 <- which(data$cluster.cw==groups[4]) 
+id5 <- which(data$cluster.cw==groups[5])
+id6 <- which(data$cluster.cw==groups[6])
+id7 <- which(data$cluster.cw==groups[7])
+
+id <- c(id1, id2, id3, id4, id5, id6, id7) 
+
+n1 <- length(id1)
+n2 <- length(id2)
+n3 <- length(id3)
+n4 <- length(id4)
+n4 <- length(id5)
+n4 <- length(id6)
+n4 <- length(id7)
+
+data2 <- data
+data2$cluster.cw <- NULL 
+```
+
+```{r}
+# performing QDA:
+data.qda <- qda(data2, data$cluster.cw)
+data.qda
+
+```
+
+Misclassification table:
+
+```{r}
+qda.pred <- predict(data.qda, data2) # assigned class to our dataset
+table(class.true=data$cluster.cw, class.assigned=qda.pred$class) # misclassification table 
+errors <- (qda.pred$class != data$cluster.cw) 
+```
+
+**APER**: Actual Predictor Error Rate - with empirical frequencies. Namely the total number of mistakes over the total number of data.
+
+```{r}
+APER <- sum(errors)/n
+APER
+```
+
+**AER**: Actual Error Rate - with empirical frequencies:
+
+```{r}
+## AER: Actual Error Rate - with empirical frequencies
+# Compute AER via loo-CV.
+# set CV=TRUE for Leave-one-out Cross Validation
+data.qdaCV <- qda(data2, data$cluster.cw, CV=TRUE) #prior=priors 
+
+# misclassification table:
+misc <- table(class.true=data$cluster.cw, class.assignedCV=data.qdaCV$class) 
+
+errorsCV <- (data.qdaCV$class != data$cluster.cw) 
+
+AERCV <- sum(errorsCV)/n
+AERCV
+
+```
+
+```{r}
+### PREDICTION of a new datum
+
+Labels_Predicted_01 <- which((Test$I_response ==0) & (Test$A_response == 1)) 
+Predicted_01 <- Test[Labels_Predicted_01,]
+head(Predicted_01)     
+        
+```
+
+```{r}
+
+data <- Predicted_01 
+
+data <- data[-1]  #REMOVE Numerical ID
+data <- data[-9]   #REMOVE IncomeInvestment
+data <- data[-8]   #REMOVE AccumulationInvestment
+data <- data[-5]   #REMOVE RiskPropensity
+data <- data[-2]   #REMOVE Gender
+data <- data[-7]   #REMOVE A_response
+data <- data[-6]   #REMOVE I_response
+
+cluster01 <- predict(data.qda,data)$class
+table(cluster01)
+
+```
+
+These are the results of the classifier: **10 people will switch to cluster 1-1** (Cluster 7)
+
+```{r}
+Predicted_01 <- cbind(Predicted_01, cluster01)
+labels_01to11<- which((Predicted_01$cluster01 == 7)) 
+data_01to11 <- Predicted_01[labels_01to11,]
+head(data_01to11)     
+        
+```
+
+Definitive labels:
+
+We save the client IDs that we will move to category 1-1
+
+```{r}
+ID <- data_01to11$ID
+ID
+```
+
+We replace the new labels:
+
+```{r}
+
+data_01to11 <- data_01to11[-13] 
+
+i <- 0
+for(i in ID) {
+  
+label <- which(Test$ID == i) 
+Test[label,11] <- 1
+
+}
+
+```
+
+Definitive labels (for now..):
+
+```{r}
+T_Def <- table(Test$I_response,Test$A_response)
+```
+
+```{r}
+T_Predicted
+T_Def
+```
+
+#### **QDA cluster 00**
+
+```{r}
+#### QDA: Univariate Quadratic Discriminant Analysis ####
+
+data <- data_labeled_00 
+data <- data[-1]  #REMOVE Numerical ID
+data <- data[-9]   #REMOVE IncomeInvestment
+data <- data[-8]   #REMOVE AccumulationInvestment
+data <- data[-5]   #REMOVE RiskPropensity
+data <- data[-2]   #REMOVE Gender
+
+
+n <- dim(data)[1]
+p <- dim(data)[2] - 1 
+
+groups <- levels(factor(data$cluster.cw)) 
+g <- length(groups)
+
+id1 <- which(data$cluster.cw==groups[1]) 
+id2 <- which(data$cluster.cw==groups[2]) 
+id3 <- which(data$cluster.cw==groups[3])
+id4 <- which(data$cluster.cw==groups[4]) 
+id5 <- which(data$cluster.cw==groups[5])
+id6 <- which(data$cluster.cw==groups[6])
+
+id <- c(id1, id2, id3, id4, id5, id6) 
+
+n1 <- length(id1)
+n2 <- length(id2)
+n3 <- length(id3)
+n4 <- length(id4) 
+n5 <- length(id5)
+n6 <- length(id6)
+
+data2 <- data
+data2$cluster.cw <- NULL 
+```
+
+```{r}
+# performing QDA:
+data.qda <- qda(data2, data$cluster.cw)
+data.qda
+
+```
+
+Misclassification table:
+
+```{r}
+qda.pred <- predict(data.qda, data2) # assigned class to our dataset
+table(class.true=data$cluster.cw, class.assigned=qda.pred$class) # misclassification table 
+errors <- (qda.pred$class != data$cluster.cw) 
+```
+
+**APER**: Actual Predictor Error Rate - with empirical frequencies. Namely the total number of mistakes over the total number of data.
+
+```{r}
+APER <- sum(errors)/n
+APER
+```
+
+**AER**: Actual Error Rate - with empirical frequencies:
+
+```{r}
+## AER: Actual Error Rate - with empirical frequencies
+# Compute AER via loo-CV.
+# set CV=TRUE for Leave-one-out Cross Validation
+data.qdaCV <- qda(data2, data$cluster.cw, CV=TRUE) #prior=priors 
+
+# misclassification table:
+misc <- table(class.true=data$cluster.cw, class.assignedCV=data.qdaCV$class) 
+
+errorsCV <- (data.qdaCV$class != data$cluster.cw) 
+
+AERCV <- sum(errorsCV)/n
+AERCV
+
+```
+
+```{r}
+### PREDICTION of a new datum
+
+Labels_Predicted_00 <- which((Test$I_response ==0) & (Test$A_response == 0)) 
+Predicted_00 <- Test[Labels_Predicted_00,]
+head(Predicted_00)     
+        
+```
+
+```{r}
+
+data <- Predicted_00 
+
+data <- data[-1]  #REMOVE Numerical ID
+data <- data[-9]   #REMOVE IncomeInvestment
+data <- data[-8]   #REMOVE AccumulationInvestment
+data <- data[-5]   #REMOVE RiskPropensity
+data <- data[-2]   #REMOVE Gender
+data <- data[-7]   #REMOVE A_response
+data <- data[-6]   #REMOVE I_response
+
+cluster00 <- predict(data.qda,data)$class
+table(cluster00)
+
+```
+
+These are the results of the classifier: **2 people will switch to cluster 1-1** (Cluster 6). The number is small, as we expected. It is not trivial that a person predicted 0-0 is likely to go into the 1-1 category!
+
+```{r}
+Predicted_00 <- cbind(Predicted_00, cluster00)
+labels_00to11<- which((Predicted_00$cluster00 == 6)) 
+data_00to11 <- Predicted_00[labels_00to11,]
+head(data_00to11)     
+        
+```
+
+Definitive labels:
+
+We save the client IDs that we will move to category 1-1
+
+```{r}
+ID <- data_00to11$ID
+ID
+```
+
+We replace the new labels:
+
+```{r}
+
+data_00to110 <- data_00to11[-13] 
+
+i <- 0
+for(i in ID) {
+  
+label <- which(Test$ID == i) 
+Test[label,11] <- 1
+Test[label,12] <- 1
+
+}
+
+```
+
+Definitive labels! :
+
+```{r}
+T_Def <- table(Test$I_response,Test$A_response)
+```
+
+```{r}
+T_Predicted
+T_Def
+```
+
+#### **Analysis of results: post-clustering**
+
+Definitive labels:
+
+```{r}
+T_Def <- table(Test$I_response,Test$A_response)
+T_Def
+```
+
+**The process**:
+
+```{r}
+T_Original
+T_Predicted
+T_Def
+```
+
+SINGLE LABELS:
+
+Original labels:
+
+```{r}
+T_Original_I
+T_Original_A
+```
+
+Predicted labels (By the models):
+
+```{r}
+T_Predicted_I
+T_Predicted_A
+```
+
+Post- clustering:
+
+```{r}
+T_Def_I <- table(Test$I_response)
+T_Def_I
+
+T_Def_A <- table(Test$A_response)
+T_Def_A
+```
+
+**Conclusions**: We succeeded both in correcting any classification errors and in expanding our ideal target audience, which increased from 210 customers to 241 customers.
+
+# **RECOMMENDATION SYSTEM**
+
+In this last step, we define an algorithm to recommend products to customers.
+
+We decided to implement a **long-term** strategy, so that clients who are not very inclined or indicated to invest may in the future have the right tools or drive to do so.
+
+Concretely, we implemented this strategy by offering **finance courses** to clients with a below-average financial education threshold, and by offering counseling with a **financial advisor** in the case of clients with above-average financial education.
+
+#### **New variables:**
+
+We define new variables that may be useful in the process of deciding which product to recommend. Each variable defined is actually intended to be **dual,** in fact it will have different parameters (alpha) depending on whether one is considering income or accumulation type investment.
+
+1.  **Economic Availability**: Alpha is larger in the variable corresponding to income investment, because here the feature Wealth is more important than in accumulation investment.
+
+```{r}
+alphaACC= 0.4
+alphaINC= 0.6
+
+
+Wealth= Test[,8]
+Income= Test[,7]
+Family= Test[,4]
+
+EconomicAvailability_INC = scale((alphaINC*Wealth  +(1-alphaINC)*Income)/ (log(Family +2))) 
+EconomicAvailability_ACC = scale((alphaACC*Wealth  +(1-alphaACC)*Income)/ (log(Family +2)))
+
+Test$EconomicAvailability_INC <- EconomicAvailability_INC
+Test$EconomicAvailability_ACC <- EconomicAvailability_ACC
+
+```
+
+2.  **Investement propensity**
+
+```{r}
+
+Risk= Test[,5]
+FinEdu= Test[,6]
+
+beta= 0.1
+gamma= 0.3
+
+Investement_propensity_ACC = beta*Risk +gamma*FinEdu +(1- beta +gamma)*EconomicAvailability_INC   #il risk in questo caso ha poca valenza quindi top
+Investement_propensity_INC = beta*Risk +gamma*FinEdu +(1- beta +gamma)*EconomicAvailability_ACC
+
+Test$Investement_propensity_ACC <- Investement_propensity_ACC
+Test$Investement_propensity_INC <- Investement_propensity_INC
+
+```
+
+```{r}
+hist(Investement_propensity_INC)
+```
+
+```{r}
+hist(Investement_propensity_ACC)
+```
+
+Defining some thresholds that will be useful later:
+
+```{r}
+Investement_propensity_INC_Threshold_25 <- quantile(Investement_propensity_INC, 0.25)
+Investement_propensity_ACC_Threshold_25 <- quantile(Investement_propensity_ACC, 0.25)
+
+FinEdu_mean <- mean(Test$FinancialEducation)
+```
+
+#### **The products:**
+
+Importing the products:
+
+```{r}
+products <- read_excel("C:/Users/39346/Desktop/University/FINTECH/Final Project/Needs.xls", 
+    sheet = "Products")
+```
+
+**IDProduct**: Numerical ID
+
+**Type**: 1 = Accumulation product, 0 = Income product
+
+**Risk**: Normalized Synthetic Risk Indicator
+
+**IDProduct - Product description**
+
+1        Balanced Mutual Fund
+
+2        Income Conservative Unit-Linked (Life Insurance)
+
+3        Fixed Income Mutual Fund
+
+4        Balanced High Dividend Mutual Fund
+
+5        Balanced Mutual Fund
+
+6        Defensive Flexible Allocation Unit-Linked (Life Insurance)
+
+7        Aggressive Flexible Allocation Unit-Linked (Life Insurance)
+
+8        Balanced Flexible Allocation Unit-Linkled (Life Insurance)
+
+9        Cautious Allocation Segregated Account
+
+10        Fixed Income Segregated Account
+
+11        Total Return Aggressive Allocation Segregated AccountProducts
+
+Now, we divide into subsets according to the investment category of the products.
+
+**Income Products:**
+
+```{r}
+labels_IncP <- which((products$Type == 0 )) 
+IncomeProducts <-  products[labels_IncP,]
+IncomeProducts <- IncomeProducts[order(IncomeProducts$Risk),] #order by risk
+head(IncomeProducts)
+```
+
+**Accumulation Products:**
+
+```{r}
+labels_AccP <- which((products$Type == 1 )) 
+AccumulationProducts <-  products[labels_AccP,]
+AccumulationProducts <- AccumulationProducts[order(AccumulationProducts$Risk),]
+head(AccumulationProducts)
+```
+
+**New products:**
+
+As mentioned in the introduction, we have defined 2 new product to recommend: (Hoping they will incite customers to invest in the future!)
+
+The new products are:
+
++------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| ID Product | Product description                                                                                                                                                                                                                                                                                                                                                                     |
++============+=========================================================================================================================================================================================================================================================================================================================================================================================+
+| 12         | **FINANCIAL COURSE**: we propose a discounted Financial course (issued by the bank to which we are hypothetically selling this project) that will push clients to invest, increasing their financial education as well as their risk propensity (the two features in fact turn out to be positively correlated!).                                                                       |
++------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| 13         | **FINANCIAL ADVISOR**: For clients with already above-average financial knowledge, the persuasion process will be more delicate, and may not go through a basic finance course. So, the bank (again the one we are selling this project to..) will be able to offer a free consultation with an expert, which we believe can be an incentive to trust the bank and its recommendations. |
++------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+: New products
+
+```{r}
+FinancialCourse  <- c(12, 2, 0)
+FinancialAdvisor <- c(13, 3, 0)
+
+products <- rbind(products,FinancialCourse)
+products <- rbind(products,FinancialAdvisor)
+products
+```
+
+Defining the risks corresponding with the minimum risk products:
+
+```{r}
+minRiskInc= min(IncomeProducts$Risk)
+minRiskInc
+minRiskAcc= min(AccumulationProducts$Risk)
+minRiskAcc
+```
+
+#### **Function: No Investment**
+
+This is the workflow of the first function, which we will apply to 0 - 0 clients:
+
+1.  Thrashold assessment of the first quartile of Investment propensity. We proceed, recommending a product, only if the threshold is exceeded.
+
+2.  Threshold Financial education: if below average we recommend a financial course, otherwise counseling with a financial advisor.
+
+```{r}
+NoInvestmentFunction <- function(myFinEdu, myInvProp_I, myInvProp_A) { # metti var al posto di temp *****
+        
+        if ( (myInvProp_I > Investement_propensity_INC_Threshold_25) & (myInvProp_A > Investement_propensity_ACC_Threshold_25 ) ) { 
+                
+                if (myFinEdu < FinEdu_mean) {
+        
+                        return(products[12,1])
+                        
+                } else {
+        
+                       return(products[13,1]) 
+                
+                }  
+          
+                     
+        } else {
+        
+                       return(0) 
+                
+                } 
+        
+} # end of funcion bracket 
+```
+
+#### **Function: Income Investment**
+
+This is the workflow of the second function, which we will apply to 1 - 0 and 1 --1 clients:
+
+1.  Assessment of client risk propensity: if it is below the threshold corresponding to the lowest risk product we go to step 2), otherwise to step 3).
+
+2.  Threshold Financial education: if below average we recommend a financial course, otherwise counseling with a financial advisor.
+
+3.  We recommend the Income Investment product with the risk closest to the client's risk, without exceeding it.
+
+```{r}
+IncomeFunction <- function(my_minrisk_I, myFinEdu, myInvProp_I) { # metti var al posto di temp *****
+        
+        if (my_minrisk_I < minRiskInc) { 
+                
+                if (myFinEdu < FinEdu_mean) {
+        
+                        return(products[12,1])
+                        
+                } else {
+        
+                       return(products[13,1]) 
+                
+                }  
+                
+        } else {
+                
+                 x <- dim(IncomeProducts)[1]:1 
+                        for (i in x) {
+                                
+                                if (my_minrisk_I < IncomeProducts[i,3]){
+                                        
+                                next
+                                        
+                                } else {
+                
+                               return(IncomeProducts[i,1])
+                                
+                                }
+                         } 
+        } 
+        
+} # end of funcion bracket 
+```
+
+#### **Function: Accumulation Investment**
+
+This is the workflow of the second function, which we will apply to 0 - 1 and 1 --1 clients:
+
+1.  Assessment of client risk propensity: if it is below the threshold corresponding to the lowest risk product we go to step 2), otherwise to step 3).
+
+2.  Threshold Financial education: if below average we recommend a financial course, otherwise counseling with a financial advisor.
+
+3.  We recommend the Accumulation Investment product with the risk closest to the client's risk, without exceeding it.
+
+```{r}
+AccumulationFunction <- function(my_minrisk_A, myFinEdu, myInvProp_A) { # metti var al posto di temp *****
+        
+        if (my_minrisk_A < minRiskAcc) { 
+                
+                if (myFinEdu < FinEdu_mean) {
+        
+                        return(products[12,1])
+                        
+                } else {
+        
+                       return(products[13,1]) 
+                
+                }  
+                
+        } else {
+                
+                x <- dim(AccumulationProducts)[1]:1 
+                        for (i in x) {
+                                
+                                if (my_minrisk_A < AccumulationProducts[i,3]){
+                                        
+                                next
+                                        
+                                } else {
+                
+                               return(AccumulationProducts[i,1])
+                                
+                                }
+                         }
+        } 
+        
+} # end of funcion bracket 
+```
+
+#### **Testing the recommender**
+
+We add 3 columns to the test dataset, where we save the recommended products. For now we initialize them to 0.
+
+```{r}
+Reccomentation_I <- rep(0,dim(Test)[1])
+Test$Reccomentation_I <- Reccomentation_I
+
+Reccomentation_A <- rep(0,dim(Test)[1])
+Test$Reccomentation_A <- Reccomentation_A
+
+NoInvestment <- rep(0,dim(Test)[1])
+Test$NoInvestment <- NoInvestment
+
+head(Test)
+```
+
+Here, we apply the functions defined above:
+
+```{r}
+x <- 1:dim(Test)[1]
+for (i in x) {
+        
+        
+  
+        if ((Test[i,11] == 1) & (Test[i,12] == 1)) {  #I response and A response 
+        
+                
+                Test[i,17] <- (IncomeFunction(Test[i,6], Test[i,5],Test[i,16] )) #Inc 
+                Test[i,18] <- (AccumulationFunction(Test[i,6], Test[i,5], Test[i,15])) #Acc                 
+                if ( (Test[i,17] == 12) | (Test[i,17] == 13) ) {
+                       Test[i,19] <- Test[i,17]
+                       Test[i,17] <- 0 
+                        }
+                
+                if ( (Test[i,18] == 12) | (Test[i,18] == 13) ) { 
+                
+#Remember: I know that if a person receives a non-investment product for both acc and inc, 
+#they will always receive the same product in both income and acc, since fin edu is independent of inc and acc.
+#So I can over-write in Test[i,19], which would be the NoInv column.
+                        
+                        Test[i,19] <- Test[i,18]
+                        Test[i,18] <- 0 
+                         }
+                
+                
+                
+        
+        } else if ((Test[i,11] == 1) & (Test[i,12] == 0)) {
+                
+                Rec <- (IncomeFunction(Test[i,6], Test[i,5],Test[i,16])) #Inc
+                
+                if ( (Rec==12) | (Rec==13)) 
+                        {Test[i,19] <- Rec}
+                else 
+                        {Test[i,17] <- Rec}
+             
+                   
+                
+        } else if ((Test[i,11] == 0) & (Test[i,12] == 1)) {
+                
+                Rec <- (AccumulationFunction(Test[i,6], Test[i,5], Test[i,15]))  #Acc
+                
+                if ( (Rec==12) | (Rec==13)) 
+                        {Test[i,19] <- Rec}
+                else 
+                        {Test[i,18] <- Rec}
+                
+             
+                
+                   
+        } else {
+                
+                Test[i,19] <- (NoInvestmentFunction(Test[i,5], Test[i,16], Test[i,15]))#NoI
+                
+        }
+  
+          
+                          
+} # end for loop 
+
+
+```
+
+Let's look at the frequency of recommended products:
+
+```{r}
+print("Income products recommended:")
+table(Test$Reccomentation_I)[-1]
+
+print("Accumulation products recommended:")
+table(Test$Reccomentation_A)[-1]
+
+print("No investemnt products recommended:")
+table(Test$NoInvestment)[-1]
+```
+
+```{r}
+plot(table(Test$Reccomentation_I)[-1], 
+     main="Income products recommended:",
+     xlab = "Income products ID",
+     ylab="Frequency", 
+     col="blue")
+```
+
+```{r}
+plot(table(Test$Reccomentation_A)[-1], 
+     main="Accumulation products recommended:",
+     xlab = "Accumulation products ID",
+     ylab="Frequency", 
+     col="red")
+```
+
+```{r}
+plot(table(Test$NoInvestment)[-1], 
+     main="No investment products recommended:",
+     xlab = "Products ID",
+     ylab="Frequency", 
+     col="green")
+```
+
+### **CONCLUSIONS AND GOALS ACHIEVED:**
+
+-   **Clients with ideal target are increased**: from 210 customers to 241 customers (Test Dataset).
+
+-   **Products are recommended in a balanced way**: except for product 3, which has been recommended very few times because its risk threshold is 0.01 away from that of product 10. We could distribute the clients to whom this product is recommended equally between the two products.
+
+-   **Increased financial education of clients**: this, being positively correlated with customers' risk propensity, we hope will further increase our ideal target audience.
